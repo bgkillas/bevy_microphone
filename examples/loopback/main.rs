@@ -3,7 +3,7 @@ use rodio::buffer::SamplesBuffer;
 use rodio::{OutputStream, OutputStreamBuilder, Sink};
 pub fn main() {
     let mut audio = AudioManager::new(&AudioSettings::default());
-    let stream_handle: OutputStream = OutputStreamBuilder::open_default_stream().unwrap();
+    let stream_handle = OutputStreamBuilder::open_default_stream().unwrap();
     let sink = Sink::connect_new(stream_handle.mixer());
     loop {
         audio.recv_audio_decode(|data| {

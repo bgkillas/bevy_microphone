@@ -51,12 +51,11 @@ impl Drop for AudioManager {
 }
 #[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct AudioSettings {
-    input_device: Option<String>,
-    disabled: bool,
-    channels: Channels,
-    frame_size: FrameSize,
-    sample_rate: SampleRate,
-    application: Application,
+    pub input_device: Option<String>,
+    pub channels: Channels,
+    pub frame_size: FrameSize,
+    pub sample_rate: SampleRate,
+    pub application: Application,
 }
 #[derive(Clone, Copy, Default)]
 pub enum SampleRate {
@@ -110,7 +109,6 @@ impl Default for AudioSettings {
     fn default() -> Self {
         Self {
             input_device: None,
-            disabled: false,
             channels: Channels::Mono,
             frame_size: FrameSize::default(),
             sample_rate: SampleRate::default(),
@@ -137,9 +135,7 @@ impl AudioManager {
         let host = cpal::default_host();
         let device = {
             let input = settings.input_device.clone();
-            if settings.disabled {
-                None
-            } else if input.is_none() {
+            if input.is_none() {
                 host.default_input_device()
             } else if let Some(d) = host
                 .input_devices()
