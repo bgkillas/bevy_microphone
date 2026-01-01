@@ -4,13 +4,14 @@ use opus::{Application, Channels, Decoder, Encoder};
 use rubato::{Fft, FixedSync, Resampler};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
+#[cfg(feature = "log")]
 use tracing::*;
 #[cfg(feature = "bevy")]
 #[derive(bevy_ecs::prelude::Resource)]
-pub struct AudioResource(Mutex<AudioManager>);
+pub struct AudioResource(std::sync::Mutex<AudioManager>);
 #[cfg(feature = "bevy")]
 impl AudioResource {
     pub fn new(audio: &AudioSettings) -> Self {
@@ -207,7 +208,10 @@ impl AudioManager {
                                     extra.drain(..frame_size);
                                 }
                             },
-                            |err| error!("Stream error: {}", err),
+                            |_err| {
+                                #[cfg(feature = "log")]
+                                error!("Stream error: {}", _err)
+                            },
                             None,
                         ) {
                             Ok(stream) => {
@@ -219,13 +223,15 @@ impl AudioManager {
                                         thread::sleep(Duration::from_micros(time))
                                     }
                                 } else {
+                                    #[cfg(feature = "log")]
                                     error!("failed to play stream")
                                 }
                             }
-                            Err(s) => {
+                            Err(_s) => {
+                                #[cfg(feature = "log")]
                                 error!(
                                     "no stream {}, {}, {}, {}",
-                                    s,
+                                    _s,
                                     channel,
                                     cfg.sample_rate(),
                                     cfg.sample_format()
@@ -233,12 +239,15 @@ impl AudioManager {
                             }
                         }
                     } else {
+                        #[cfg(feature = "log")]
                         warn!("resamp not found")
                     }
                 } else {
+                    #[cfg(feature = "log")]
                     warn!("input config not found")
                 }
             } else {
+                #[cfg(feature = "log")]
                 warn!("input device not found")
             }
         });
