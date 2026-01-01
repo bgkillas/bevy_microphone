@@ -215,7 +215,7 @@ impl AudioManager {
                                         encoder.encode_float(&buffer[..len], &mut compressed)
                                         && len != 0
                                     {
-                                        tx.send(compressed[..len].to_vec()).unwrap();
+                                        let _ = tx.send(compressed[..len].to_vec());
                                     }
                                     extra.drain(..frame_size);
                                 }
