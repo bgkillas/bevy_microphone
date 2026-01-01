@@ -27,7 +27,6 @@ pub struct AudioManager {
     rx: Receiver<Vec<u8>>,
     decoder: Decoder,
     kill: Arc<AtomicBool>,
-    frame_size: usize,
 }
 impl Drop for AudioManager {
     fn drop(&mut self) {
@@ -38,8 +37,57 @@ pub struct AudioSettings {
     input_device: Option<String>,
     disabled: bool,
     channels: Channels,
-    frame_size: usize,
-    sample_rate: usize,
+    frame_size: FrameSize,
+    sample_rate: SampleRate,
+    application: Application,
+}
+#[derive(Clone, Copy, Default)]
+pub enum SampleRate {
+    #[default]
+    SR48,
+    SR24,
+    SR16,
+    SR12,
+    SR8,
+}
+impl SampleRate {
+    pub fn get_number(self) -> usize {
+        match self {
+            SampleRate::SR48 => 48,
+            SampleRate::SR24 => 24,
+            SampleRate::SR16 => 16,
+            SampleRate::SR12 => 12,
+            SampleRate::SR8 => 8,
+        }
+    }
+}
+#[derive(Clone, Copy, Default)]
+pub enum FrameSize {
+    FS2880,
+    FS1920,
+    FS960,
+    #[default]
+    FS480,
+    FS240,
+    FS120,
+}
+impl FrameSize {
+    pub fn get_number(self) -> usize {
+        match self {
+            FrameSize::FS2880 => 2880,
+            FrameSize::FS1920 => 1920,
+            FrameSize::FS960 => 960,
+            FrameSize::FS480 => 480,
+            FrameSize::FS240 => 240,
+            FrameSize::FS120 => 120,
+        }
+    }
+    pub fn size(self, sample_rate: SampleRate) -> usize {
+        (self.get_number() * sample_rate.get_number()) / 48
+    }
+    pub fn time(self) -> usize {
+        (self.get_number() * 1000) / 48
+    }
 }
 impl Default for AudioSettings {
     fn default() -> Self {
@@ -47,8 +95,9 @@ impl Default for AudioSettings {
             input_device: None,
             disabled: false,
             channels: Channels::Mono,
-            frame_size: 960,
-            sample_rate: 48000,
+            frame_size: FrameSize::default(),
+            sample_rate: SampleRate::default(),
+            application: Application::Audio,
         }
     }
 }
@@ -60,6 +109,7 @@ impl AudioManager {
         let channels = settings.channels;
         let frame_size = settings.frame_size;
         let sample_rate = settings.sample_rate;
+        let application = settings.application;
         #[cfg(target_os = "linux")]
         let host = cpal::available_hosts()
             .into_iter()
@@ -92,7 +142,7 @@ impl AudioManager {
                 host.default_input_device()
             }
         };
-        let decoder = Decoder::new(sample_rate as u32, channels).unwrap();
+        let decoder = Decoder::new((sample_rate.get_number() * 1000) as u32, channels).unwrap();
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let kill: Arc<AtomicBool> = AtomicBool::new(false).into();
         let kill2 = kill.clone();
@@ -107,17 +157,25 @@ impl AudioManager {
                         *cfg.buffer_size(),
                         cpal::SampleFormat::F32,
                     );
+                    let time = frame_size.time() as u64;
+                    let frame_size = frame_size.size(sample_rate);
                     if let Ok(mut resamp) = Fft::<f32>::new(
                         sample as usize,
-                        sample_rate,
+                        sample_rate.get_number() * 1000,
                         frame_size,
                         8,
                         1,
                         FixedSync::Output,
                     ) {
-                        let mut encoder =
-                            Encoder::new(sample_rate as u32, channels, Application::Audio).unwrap();
-                        let mut extra = Vec::new();
+                        let mut encoder = Encoder::new(
+                            (sample_rate.get_number() * 1000) as u32,
+                            channels,
+                            application,
+                        )
+                        .unwrap();
+                        let mut extra = vec![0f32; frame_size];
+                        let mut compressed = [0u8; 2048];
+                        let mut buffer = [0f32; 2880];
                         match device.build_input_stream(
                             &config.into(),
                             move |data: &[f32], _| {
@@ -130,9 +188,6 @@ impl AudioManager {
                                             .collect::<Vec<f32>>(),
                                     )
                                 }
-                                let mut v = Vec::new();
-                                let mut compressed = [0u8; 1024];
-                                let mut buffer = [0f32; 1024];
                                 while extra.len() >= frame_size {
                                     let input =
                                         InterleavedSlice::new(&extra[..frame_size], 1, frame_size)
@@ -140,22 +195,20 @@ impl AudioManager {
                                     let mut output =
                                         InterleavedSlice::new_mut(&mut buffer, 1, frame_size)
                                             .unwrap();
-                                    resamp
+                                    let (_, len) = resamp
                                         .process_into_buffer(&input, &mut output, None)
                                         .unwrap();
-                                    if let Ok(len) = encoder.encode_float(&buffer, &mut compressed)
+                                    if let Ok(len) =
+                                        encoder.encode_float(&buffer[..len], &mut compressed)
                                         && len != 0
                                     {
-                                        v.push(compressed[..len].to_vec())
+                                        tx.send(compressed[..len].to_vec()).unwrap();
                                     }
                                     extra.drain(..frame_size);
                                 }
-                                for v in v {
-                                    let _ = tx.send(v);
-                                }
                             },
                             |err| error!("Stream error: {}", err),
-                            Some(Duration::from_millis(10)),
+                            None,
                         ) {
                             Ok(stream) => {
                                 if let Ok(_s) = stream.play() {
@@ -163,7 +216,7 @@ impl AudioManager {
                                         if kill2.load(Ordering::Relaxed) {
                                             return;
                                         }
-                                        thread::sleep(Duration::from_millis(10))
+                                        thread::sleep(Duration::from_micros(time))
                                     }
                                 } else {
                                     error!("failed to play stream")
@@ -189,18 +242,13 @@ impl AudioManager {
                 warn!("input device not found")
             }
         });
-        Self {
-            rx,
-            decoder,
-            kill,
-            frame_size,
-        }
+        Self { rx, decoder, kill }
     }
     pub fn recv_audio<F>(&mut self, mut f: F)
     where
         F: FnMut(&[f32]),
     {
-        let out = &mut [0f32; self.frame_size];
+        let out = &mut [0.0; 2048];
         while let Ok(data) = self.rx.try_recv() {
             if let Ok(len) = self.decoder.decode_float(&data, out, false)
                 && len != 0
