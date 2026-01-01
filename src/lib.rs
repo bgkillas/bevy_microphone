@@ -17,11 +17,26 @@ impl AudioResource {
     pub fn new(audio: &AudioSettings) -> Self {
         Self(AudioManager::new(audio).into())
     }
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, AudioManager> {
+        self.0.lock().unwrap()
+    }
     pub fn recv_audio<F>(&self, f: F)
+    where
+        F: FnMut(Vec<u8>),
+    {
+        self.lock().recv_audio(f)
+    }
+    pub fn recv_audio_decode<F>(&self, f: F)
     where
         F: FnMut(&[f32]),
     {
-        self.0.lock().unwrap().recv_audio(f)
+        self.lock().recv_audio_decode(f)
+    }
+    pub fn decode<F>(&self, data: Vec<u8>, f: F)
+    where
+        F: FnMut(&[f32]),
+    {
+        self.lock().decode(data, f)
     }
 }
 pub struct AudioManager {
@@ -253,7 +268,15 @@ impl AudioManager {
         });
         Self { rx, decoder, kill }
     }
-    pub fn recv_audio<F>(&mut self, mut f: F)
+    pub fn recv_audio<F>(&self, mut f: F)
+    where
+        F: FnMut(Vec<u8>),
+    {
+        while let Ok(data) = self.rx.try_recv() {
+            f(data);
+        }
+    }
+    pub fn recv_audio_decode<F>(&mut self, mut f: F)
     where
         F: FnMut(&[f32]),
     {
@@ -264,6 +287,17 @@ impl AudioManager {
             {
                 f(&out[..len])
             }
+        }
+    }
+    pub fn decode<F>(&mut self, data: Vec<u8>, mut f: F)
+    where
+        F: FnMut(&[f32]),
+    {
+        let out = &mut [0.0; 2048];
+        if let Ok(len) = self.decoder.decode_float(&data, out, false)
+            && len != 0
+        {
+            f(&out[..len])
         }
     }
 }

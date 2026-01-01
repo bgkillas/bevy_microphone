@@ -6,7 +6,7 @@ pub fn main() {
     let stream_handle: OutputStream = OutputStreamBuilder::open_default_stream().unwrap();
     let sink = Sink::connect_new(stream_handle.mixer());
     loop {
-        audio.recv_audio(|data| {
+        audio.recv_audio_decode(|data| {
             let source =
                 SamplesBuffer::new(1, (SampleRate::default().get_number() * 1000) as u32, data);
             sink.append(source);
