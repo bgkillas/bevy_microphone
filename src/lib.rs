@@ -49,6 +49,7 @@ impl Drop for AudioManager {
         self.kill();
     }
 }
+#[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct AudioSettings {
     input_device: Option<String>,
     disabled: bool,
