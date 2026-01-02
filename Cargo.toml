@@ -15,7 +15,7 @@ log=["dep:tracing"]
 bevy_ecs = { version = "0.17.3", default-features = false, optional = true }
 tracing = {version="0.1.44",optional = true}
 cpal = {version= "0.17.0", features=["jack"]}
-opus = "0.3.0"
+opus = {git="https://github.com/jesses2025smith/opus-rs"}
 rubato = "1.0.0"
 audioadapter-buffers="2.0.0"
 [dev-dependencies]

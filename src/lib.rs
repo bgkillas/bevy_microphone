@@ -1,6 +1,7 @@
 use audioadapter_buffers::direct::InterleavedSlice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use opus::{Application, Channels, Decoder, Encoder};
+use cpal::{BufferSize, StreamConfig};
+use opus_rs::{Application, Channels, Decoder, Encoder};
 use rubato::{Fft, FixedSync, Resampler};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -20,11 +21,23 @@ impl AudioResource {
     pub fn lock(&self) -> std::sync::MutexGuard<'_, AudioManager> {
         self.0.lock().unwrap()
     }
+    pub fn try_recv_audio<F>(&self, f: F)
+    where
+        F: FnMut(Vec<u8>),
+    {
+        self.lock().try_recv_audio(f)
+    }
     pub fn recv_audio<F>(&self, f: F)
     where
         F: FnMut(Vec<u8>),
     {
         self.lock().recv_audio(f)
+    }
+    pub fn try_recv_audio_decode<F>(&self, f: F)
+    where
+        F: FnMut(&mut [f32]),
+    {
+        self.lock().try_recv_audio_decode(f)
     }
     pub fn recv_audio_decode<F>(&self, f: F)
     where
@@ -56,7 +69,7 @@ impl Drop for AudioManager {
 #[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct AudioSettings {
     pub input_device: Option<String>,
-    pub channels: Channels,
+    pub channels: Channels, //TODO only mono implemented
     pub frame_size: FrameSize,
     pub sample_rate: SampleRate,
     pub application: Application,
@@ -107,6 +120,9 @@ impl FrameSize {
     }
     pub fn time(self) -> usize {
         (self.get_number() * 1000) / 48
+    }
+    pub fn get_input(self, sample_rate: usize) -> usize {
+        (sample_rate * self.get_number()) / (48000)
     }
 }
 impl Default for AudioSettings {
@@ -169,100 +185,107 @@ impl AudioManager {
             if let Some(device) = device {
                 if let Ok(cfg) = device.default_input_config() {
                     let sample = cfg.sample_rate();
-                    let channel = cfg.channels();
-                    let config = cpal::SupportedStreamConfig::new(
-                        if channel <= 2 { channel } else { 2 },
-                        sample,
-                        *cfg.buffer_size(),
-                        cpal::SampleFormat::F32,
-                    );
                     let time = frame_size.time() as u64;
+                    let input_frame_size = frame_size.get_input(sample as usize);
                     let frame_size = frame_size.size(sample_rate);
-                    if let Ok(mut resamp) = Fft::<f32>::new(
-                        sample as usize,
-                        sample_rate.get_number() * 1000,
-                        frame_size,
-                        8,
-                        1,
-                        FixedSync::Output,
-                    ) {
-                        let mut encoder = Encoder::new(
-                            (sample_rate.get_number() * 1000) as u32,
-                            channels,
-                            application,
-                        )
-                        .unwrap();
-                        let mut extra = vec![0f32; frame_size];
-                        let mut compressed = [0u8; 2048];
-                        let mut buffer = [0f32; 2880];
-                        match device.build_input_stream(
-                            &config.into(),
-                            move |data: &[f32], _| {
-                                if stop2.load(Ordering::Relaxed) {
-                                    extra.clear();
-                                    return;
-                                }
-                                if channel == 1 {
-                                    extra.extend(data);
-                                } else {
-                                    extra.extend(
-                                        data.chunks_exact(2)
-                                            .map(|a| (a[0] + a[1]) * 0.5)
-                                            .collect::<Vec<f32>>(),
-                                    )
-                                }
-                                while extra.len() >= frame_size {
-                                    let input =
-                                        InterleavedSlice::new(&extra[..frame_size], 1, frame_size)
-                                            .unwrap();
-                                    let mut output =
-                                        InterleavedSlice::new_mut(&mut buffer, 1, frame_size)
-                                            .unwrap();
-                                    let (_, len) = resamp
-                                        .process_into_buffer(&input, &mut output, None)
-                                        .unwrap();
-                                    if let Ok(len) =
-                                        encoder.encode_float(&buffer[..len], &mut compressed)
-                                        && len != 0
-                                    {
-                                        let _ = tx.send(compressed[..len].to_vec());
-                                    }
-                                    extra.drain(..frame_size);
-                                }
-                            },
-                            |_err| {
-                                #[cfg(feature = "log")]
-                                error!("Stream error: {}", _err)
-                            },
-                            None,
+                    let config = StreamConfig {
+                        channels: 1,
+                        sample_rate: sample,
+                        buffer_size: BufferSize::Default,
+                    };
+                    let mut resamp = if sample as usize != sample_rate.get_number() * 1000 {
+                        match Fft::<f32>::new(
+                            sample as usize,
+                            sample_rate.get_number() * 1000,
+                            input_frame_size,
+                            8,
+                            1,
+                            FixedSync::Both,
                         ) {
-                            Ok(stream) => {
-                                if let Ok(_s) = stream.play() {
-                                    loop {
-                                        if kill2.load(Ordering::Relaxed) {
-                                            return;
-                                        }
-                                        thread::sleep(Duration::from_micros(time))
-                                    }
-                                } else {
-                                    #[cfg(feature = "log")]
-                                    error!("failed to play stream")
-                                }
-                            }
-                            Err(_s) => {
-                                #[cfg(feature = "log")]
-                                error!(
-                                    "no stream {}, {}, {}, {}",
-                                    _s,
-                                    channel,
-                                    cfg.sample_rate(),
-                                    cfg.sample_format()
-                                )
+                            Ok(ret) => Some(ret),
+                            Err(e) => {
+                                error!("{e}");
+                                return;
                             }
                         }
                     } else {
-                        #[cfg(feature = "log")]
-                        warn!("resamp not found")
+                        None
+                    };
+                    let mut encoder = Encoder::new(
+                        (sample_rate.get_number() * 1000) as u32,
+                        channels,
+                        application,
+                    )
+                    .unwrap();
+                    let mut extra = Vec::with_capacity(input_frame_size);
+                    let mut compressed = [0u8; 2048];
+                    let mut buffer = [0f32; 2880];
+                    match device.build_input_stream(
+                        &config,
+                        move |data: &[f32], _| {
+                            if stop2.load(Ordering::Relaxed) {
+                                extra.clear();
+                                return;
+                            }
+                            extra.extend(data);
+                            while extra.len() >= input_frame_size {
+                                let buf = if let Some(resamp) = &mut resamp {
+                                    let input = InterleavedSlice::new(
+                                        &extra[..input_frame_size],
+                                        1,
+                                        input_frame_size,
+                                    )
+                                    .unwrap();
+                                    let mut output = InterleavedSlice::new_mut(
+                                        &mut buffer[..frame_size],
+                                        1,
+                                        frame_size,
+                                    )
+                                    .unwrap();
+                                    resamp
+                                        .process_into_buffer(&input, &mut output, None)
+                                        .unwrap();
+                                    &buffer[..frame_size]
+                                } else {
+                                    &extra[..input_frame_size]
+                                };
+                                if let Ok(len) = encoder.encode_float(buf, &mut compressed)
+                                    && len != 0
+                                {
+                                    let _ = tx.send(compressed[..len].to_vec());
+                                }
+                                extra.drain(..input_frame_size);
+                            }
+                        },
+                        |_err| {
+                            #[cfg(feature = "log")]
+                            error!("Stream error: {}", _err)
+                        },
+                        None,
+                    ) {
+                        Ok(stream) => {
+                            if let Ok(_s) = stream.play() {
+                                loop {
+                                    if kill2.load(Ordering::Relaxed) {
+                                        return;
+                                    }
+                                    thread::sleep(Duration::from_micros(time))
+                                }
+                            } else {
+                                #[cfg(feature = "log")]
+                                error!("failed to play stream")
+                            }
+                        }
+                        Err(_s) => {
+                            #[cfg(feature = "log")]
+                            error!(
+                                "no stream {}, {}, {}, {}",
+                                _s,
+                                cfg.channels(),
+                                cfg.sample_rate(),
+                                cfg.sample_format()
+                            )
+                        }
                     }
                 } else {
                     #[cfg(feature = "log")]
@@ -280,7 +303,7 @@ impl AudioManager {
             stop,
         }
     }
-    pub fn recv_audio<F>(&self, mut f: F)
+    pub fn try_recv_audio<F>(&self, mut f: F)
     where
         F: FnMut(Vec<u8>),
     {
@@ -288,15 +311,36 @@ impl AudioManager {
             f(data);
         }
     }
+    pub fn recv_audio<F>(&self, mut f: F)
+    where
+        F: FnMut(Vec<u8>),
+    {
+        while let Ok(data) = self.rx.recv() {
+            f(data);
+        }
+    }
     pub fn stop(&self, b: bool) {
         self.stop.store(b, Ordering::Relaxed)
+    }
+    pub fn try_recv_audio_decode<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut [f32]),
+    {
+        let out = &mut [0.0; 2048];
+        while let Ok(data) = self.rx.try_recv() {
+            if let Ok(len) = self.decoder.decode_float(&data, out, false)
+                && len != 0
+            {
+                f(&mut out[..len])
+            }
+        }
     }
     pub fn recv_audio_decode<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut [f32]),
     {
         let out = &mut [0.0; 2048];
-        while let Ok(data) = self.rx.try_recv() {
+        while let Ok(data) = self.rx.recv() {
             if let Ok(len) = self.decoder.decode_float(&data, out, false)
                 && len != 0
             {
