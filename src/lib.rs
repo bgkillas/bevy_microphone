@@ -38,11 +38,8 @@ impl AudioResource {
     {
         self.lock().decode(data, f)
     }
-    pub fn stop(&self) {
-        self.lock().stop()
-    }
-    pub fn start(&self) {
-        self.lock().start()
+    pub fn stop(&self, b: bool) {
+        self.lock().stop(b)
     }
 }
 pub struct AudioManager {
@@ -291,11 +288,8 @@ impl AudioManager {
             f(data);
         }
     }
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed)
-    }
-    pub fn start(&self) {
-        self.stop.store(false, Ordering::Relaxed)
+    pub fn stop(&self, b: bool) {
+        self.stop.store(b, Ordering::Relaxed)
     }
     pub fn recv_audio_decode<F>(&mut self, mut f: F)
     where
