@@ -38,11 +38,18 @@ impl AudioResource {
     {
         self.lock().decode(data, f)
     }
+    pub fn stop(&self) {
+        self.lock().stop()
+    }
+    pub fn start(&self) {
+        self.lock().start()
+    }
 }
 pub struct AudioManager {
     rx: Receiver<Vec<u8>>,
     decoder: Decoder,
     kill: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
 }
 impl Drop for AudioManager {
     fn drop(&mut self) {
@@ -159,6 +166,8 @@ impl AudioManager {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let kill: Arc<AtomicBool> = AtomicBool::new(false).into();
         let kill2 = kill.clone();
+        let stop: Arc<AtomicBool> = AtomicBool::new(false).into();
+        let stop2 = stop.clone();
         thread::spawn(move || {
             if let Some(device) = device {
                 if let Ok(cfg) = device.default_input_config() {
@@ -192,6 +201,10 @@ impl AudioManager {
                         match device.build_input_stream(
                             &config.into(),
                             move |data: &[f32], _| {
+                                if stop2.load(Ordering::Relaxed) {
+                                    extra.clear();
+                                    return;
+                                }
                                 if channel == 1 {
                                     extra.extend(data);
                                 } else {
@@ -263,7 +276,12 @@ impl AudioManager {
                 warn!("input device not found")
             }
         });
-        Self { rx, decoder, kill }
+        Self {
+            rx,
+            decoder,
+            kill,
+            stop,
+        }
     }
     pub fn recv_audio<F>(&self, mut f: F)
     where
@@ -272,6 +290,12 @@ impl AudioManager {
         while let Ok(data) = self.rx.try_recv() {
             f(data);
         }
+    }
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed)
+    }
+    pub fn start(&self) {
+        self.stop.store(false, Ordering::Relaxed)
     }
     pub fn recv_audio_decode<F>(&mut self, mut f: F)
     where
