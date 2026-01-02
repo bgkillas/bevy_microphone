@@ -1,6 +1,6 @@
 use bevy_microphone::{AudioManager, AudioSettings, SampleRate};
 use rodio::buffer::SamplesBuffer;
-use rodio::{OutputStream, OutputStreamBuilder, Sink};
+use rodio::{OutputStreamBuilder, Sink};
 pub fn main() {
     let mut audio = AudioManager::new(&AudioSettings::default());
     let stream_handle = OutputStreamBuilder::open_default_stream().unwrap();

@@ -28,13 +28,13 @@ impl AudioResource {
     }
     pub fn recv_audio_decode<F>(&self, f: F)
     where
-        F: FnMut(&[f32]),
+        F: FnMut(&mut [f32]),
     {
         self.lock().recv_audio_decode(f)
     }
     pub fn decode<F>(&self, data: Vec<u8>, f: F)
     where
-        F: FnMut(&[f32]),
+        F: FnMut(&mut [f32]),
     {
         self.lock().decode(data, f)
     }
@@ -275,26 +275,26 @@ impl AudioManager {
     }
     pub fn recv_audio_decode<F>(&mut self, mut f: F)
     where
-        F: FnMut(&[f32]),
+        F: FnMut(&mut [f32]),
     {
         let out = &mut [0.0; 2048];
         while let Ok(data) = self.rx.try_recv() {
             if let Ok(len) = self.decoder.decode_float(&data, out, false)
                 && len != 0
             {
-                f(&out[..len])
+                f(&mut out[..len])
             }
         }
     }
     pub fn decode<F>(&mut self, data: Vec<u8>, mut f: F)
     where
-        F: FnMut(&[f32]),
+        F: FnMut(&mut [f32]),
     {
         let out = &mut [0.0; 2048];
         if let Ok(len) = self.decoder.decode_float(&data, out, false)
             && len != 0
         {
-            f(&out[..len])
+            f(&mut out[..len])
         }
     }
 }
