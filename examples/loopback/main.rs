@@ -7,11 +7,9 @@ pub fn main() {
     let mut audio = AudioManager::new(&audio);
     let stream_handle = OutputStreamBuilder::open_default_stream().unwrap();
     let sink = Sink::connect_new(stream_handle.mixer());
-    loop {
-        audio.recv_audio_decode(|data| {
-            let source = SamplesBuffer::new(1, (sample_rate.get_number() * 1000) as u32, data);
-            sink.append(source);
-            sink.play()
-        });
-    }
+    audio.recv_audio_decode(|data| {
+        let source = SamplesBuffer::new(1, (sample_rate.get_number() * 1000) as u32, data);
+        sink.append(source);
+        sink.play()
+    });
 }
