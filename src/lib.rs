@@ -154,21 +154,19 @@ impl AudioManager {
         #[cfg(not(target_os = "linux"))]
         let host = cpal::default_host();
         let device = {
-            let input = settings.input_device.clone();
-            if input.is_none() {
-                host.default_input_device()
-            } else if let Some(d) = host
-                .input_devices()
-                .map(|mut d| {
-                    d.find(|d| {
-                        d.description()
-                            .ok()
-                            .and_then(|a| input.as_ref().map(|i| i == a.name()))
-                            .unwrap_or(false)
+            if let Some(input) = &settings.input_device
+                && let Some(d) = host
+                    .input_devices()
+                    .map(|mut d| {
+                        d.find(|d| {
+                            d.description()
+                                .ok()
+                                .map(|a| input == a.name())
+                                .unwrap_or(false)
+                        })
                     })
-                })
-                .ok()
-                .flatten()
+                    .ok()
+                    .flatten()
             {
                 Some(d)
             } else {
