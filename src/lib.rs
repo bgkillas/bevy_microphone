@@ -1,7 +1,7 @@
 use audioadapter_buffers::direct::InterleavedSlice;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, StreamConfig};
-use opus_rs::{Application, Channels, Decoder, Encoder};
+use opus::{Application, Channels, Decoder, Encoder};
 use rubato::{Fft, FixedSync, Resampler};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
