@@ -219,7 +219,7 @@ impl AudioManager {
                     let mut compressed = [0u8; 2048];
                     let mut buffer = [0f32; 2880];
                     match device.build_input_stream(
-                        &config,
+                        config,
                         move |data: &[f32], _| {
                             if stop2.load(Ordering::Relaxed) {
                                 extra.clear();
