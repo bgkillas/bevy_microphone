@@ -69,8 +69,6 @@ pub struct AudioManager {
     stop: Arc<AtomicBool>,
     #[cfg(feature = "opus")]
     frame_size: FrameSize,
-    #[cfg(feature = "opus")]
-    sample_rate: SampleRate,
 }
 impl Drop for AudioManager {
     fn drop(&mut self) {
@@ -212,7 +210,6 @@ impl AudioManager {
                             sample as usize,
                             sample_rate.get_number() * 1000,
                             input_frame_size,
-                            8,
                             1,
                             FixedSync::Both,
                         ) {
@@ -318,8 +315,6 @@ impl AudioManager {
             stop,
             #[cfg(feature = "opus")]
             frame_size,
-            #[cfg(feature = "opus")]
-            sample_rate,
         }
     }
     #[cfg(feature = "opus")]
