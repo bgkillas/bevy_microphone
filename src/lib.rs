@@ -1,15 +1,15 @@
 use audioadapter_buffers::direct::InterleavedSlice;
+use bevy_log::{error, warn};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, StreamConfig};
-use opus::{Application, Channels, Decoder, Encoder};
+#[cfg(feature = "opus")]
+use opus_rs::{Application, OpusDecoder, OpusEncoder};
 use rubato::{Fft, FixedSync, Resampler};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
-#[cfg(feature = "log")]
-use tracing::*;
 #[cfg(feature = "bevy")]
 #[derive(bevy_ecs::prelude::Resource)]
 pub struct AudioResource(std::sync::Mutex<AudioManager>);
@@ -21,12 +21,14 @@ impl AudioResource {
     pub fn lock(&self) -> std::sync::MutexGuard<'_, AudioManager> {
         self.0.lock().unwrap()
     }
+    #[cfg(feature = "opus")]
     pub fn try_recv_audio<F>(&self, f: F)
     where
         F: FnMut(Vec<u8>),
     {
         self.lock().try_recv_audio(f)
     }
+    #[cfg(feature = "opus")]
     pub fn recv_audio<F>(&self, f: F)
     where
         F: FnMut(Vec<u8>),
@@ -45,6 +47,7 @@ impl AudioResource {
     {
         self.lock().recv_audio_decode(f)
     }
+    #[cfg(feature = "opus")]
     pub fn decode<F>(&self, data: Vec<u8>, f: F)
     where
         F: FnMut(&mut [f32]),
@@ -56,10 +59,18 @@ impl AudioResource {
     }
 }
 pub struct AudioManager {
+    #[cfg(feature = "opus")]
     rx: Receiver<Vec<u8>>,
-    decoder: Decoder,
+    #[cfg(not(feature = "opus"))]
+    rx: Receiver<Vec<f32>>,
+    #[cfg(feature = "opus")]
+    decoder: OpusDecoder,
     kill: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    #[cfg(feature = "opus")]
+    frame_size: FrameSize,
+    #[cfg(feature = "opus")]
+    sample_rate: SampleRate,
 }
 impl Drop for AudioManager {
     fn drop(&mut self) {
@@ -69,9 +80,10 @@ impl Drop for AudioManager {
 #[cfg_attr(feature = "bevy", derive(bevy_ecs::prelude::Resource))]
 pub struct AudioSettings {
     pub input_device: Option<String>,
-    pub channels: Channels, //TODO only mono implemented
+    pub channels: usize, //TODO only mono implemented
     pub frame_size: FrameSize,
     pub sample_rate: SampleRate,
+    #[cfg(feature = "opus")]
     pub application: Application,
 }
 #[derive(Clone, Copy, Default)]
@@ -129,9 +141,10 @@ impl Default for AudioSettings {
     fn default() -> Self {
         Self {
             input_device: None,
-            channels: Channels::Mono,
+            channels: 1,
             frame_size: FrameSize::default(),
             sample_rate: SampleRate::default(),
+            #[cfg(feature = "opus")]
             application: Application::Audio,
         }
     }
@@ -141,14 +154,16 @@ impl AudioManager {
         self.kill.store(true, Ordering::Relaxed);
     }
     pub fn new(settings: &AudioSettings) -> Self {
+        #[cfg(feature = "opus")]
         let channels = settings.channels;
         let frame_size = settings.frame_size;
         let sample_rate = settings.sample_rate;
+        #[cfg(feature = "opus")]
         let application = settings.application;
         #[cfg(target_os = "linux")]
         let host = cpal::available_hosts()
             .into_iter()
-            .find(|id| *id == cpal::HostId::Jack)
+            .find(|id| *id == cpal::HostId::PipeWire)
             .and_then(|id| cpal::host_from_id(id).ok())
             .unwrap_or(cpal::default_host());
         #[cfg(not(target_os = "linux"))]
@@ -173,8 +188,9 @@ impl AudioManager {
                 host.default_input_device()
             }
         };
-        let decoder = Decoder::new((sample_rate.get_number() * 1000) as u32, channels).unwrap();
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        #[cfg(feature = "opus")]
+        let decoder = OpusDecoder::new((sample_rate.get_number() * 1000) as i32, channels).unwrap();
+        let (tx, rx) = mpsc::channel();
         let kill: Arc<AtomicBool> = AtomicBool::new(false).into();
         let kill2 = kill.clone();
         let stop: Arc<AtomicBool> = AtomicBool::new(false).into();
@@ -209,13 +225,15 @@ impl AudioManager {
                     } else {
                         None
                     };
-                    let mut encoder = Encoder::new(
-                        (sample_rate.get_number() * 1000) as u32,
+                    #[cfg(feature = "opus")]
+                    let mut encoder = OpusEncoder::new(
+                        (sample_rate.get_number() * 1000) as i32,
                         channels,
                         application,
                     )
                     .unwrap();
                     let mut extra = Vec::with_capacity(input_frame_size);
+                    #[cfg(feature = "opus")]
                     let mut compressed = [0u8; 2048];
                     let mut buffer = [0f32; 2880];
                     match device.build_input_stream(
@@ -247,18 +265,20 @@ impl AudioManager {
                                 } else {
                                     &extra[..input_frame_size]
                                 };
-                                if let Ok(len) = encoder.encode_float(buf, &mut compressed)
+                                #[cfg(feature = "opus")]
+                                if let Ok(len) = encoder.encode(buf, frame_size, &mut compressed)
                                     && len != 0
                                 {
                                     let _ = tx.send(compressed[..len].to_vec());
                                 }
+                                #[cfg(not(feature = "opus"))]
+                                {
+                                    let _ = tx.send(buf.to_vec());
+                                }
                                 extra.drain(..input_frame_size);
                             }
                         },
-                        |_err| {
-                            #[cfg(feature = "log")]
-                            error!("Stream error: {}", _err)
-                        },
+                        |err| error!("Stream error: {}", err),
                         None,
                     ) {
                         Ok(stream) => {
@@ -270,15 +290,13 @@ impl AudioManager {
                                     thread::sleep(Duration::from_micros(time))
                                 }
                             } else {
-                                #[cfg(feature = "log")]
                                 error!("failed to play stream")
                             }
                         }
-                        Err(_s) => {
-                            #[cfg(feature = "log")]
+                        Err(s) => {
                             error!(
                                 "no stream {}, {}, {}, {}",
-                                _s,
+                                s,
                                 cfg.channels(),
                                 cfg.sample_rate(),
                                 cfg.sample_format()
@@ -286,21 +304,25 @@ impl AudioManager {
                         }
                     }
                 } else {
-                    #[cfg(feature = "log")]
                     warn!("input config not found")
                 }
             } else {
-                #[cfg(feature = "log")]
                 warn!("input device not found")
             }
         });
         Self {
             rx,
+            #[cfg(feature = "opus")]
             decoder,
             kill,
             stop,
+            #[cfg(feature = "opus")]
+            frame_size,
+            #[cfg(feature = "opus")]
+            sample_rate,
         }
     }
+    #[cfg(feature = "opus")]
     pub fn try_recv_audio<F>(&self, mut f: F)
     where
         F: FnMut(Vec<u8>),
@@ -309,6 +331,7 @@ impl AudioManager {
             f(data);
         }
     }
+    #[cfg(feature = "opus")]
     pub fn recv_audio<F>(&self, mut f: F)
     where
         F: FnMut(Vec<u8>),
@@ -320,38 +343,62 @@ impl AudioManager {
     pub fn stop(&self, b: bool) {
         self.stop.store(b, Ordering::Relaxed)
     }
+    #[cfg(feature = "opus")]
     pub fn try_recv_audio_decode<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut [f32]),
     {
         let out = &mut [0.0; 2048];
+        let frame_size = self.frame_size.get_number();
         while let Ok(data) = self.rx.try_recv() {
-            if let Ok(len) = self.decoder.decode_float(&data, out, false)
+            if let Ok(len) = self.decoder.decode(&data, frame_size, out)
                 && len != 0
             {
                 f(&mut out[..len])
             }
         }
     }
+    #[cfg(not(feature = "opus"))]
+    pub fn try_recv_audio_decode<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut [f32]),
+    {
+        while let Ok(mut data) = self.rx.try_recv() {
+            f(&mut data)
+        }
+    }
+    #[cfg(feature = "opus")]
     pub fn recv_audio_decode<F>(&mut self, mut f: F)
     where
         F: FnMut(&mut [f32]),
     {
         let out = &mut [0.0; 2048];
+        let frame_size = self.frame_size.get_number();
         while let Ok(data) = self.rx.recv() {
-            if let Ok(len) = self.decoder.decode_float(&data, out, false)
+            if let Ok(len) = self.decoder.decode(&data, frame_size, out)
                 && len != 0
             {
                 f(&mut out[..len])
             }
         }
     }
+    #[cfg(not(feature = "opus"))]
+    pub fn recv_audio_decode<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut [f32]),
+    {
+        while let Ok(mut data) = self.rx.recv() {
+            f(&mut data)
+        }
+    }
+    #[cfg(feature = "opus")]
     pub fn decode<F>(&mut self, data: Vec<u8>, mut f: F)
     where
         F: FnMut(&mut [f32]),
     {
         let out = &mut [0.0; 2048];
-        if let Ok(len) = self.decoder.decode_float(&data, out, false)
+        let frame_size = self.frame_size.get_number();
+        if let Ok(len) = self.decoder.decode(&data, frame_size, out)
             && len != 0
         {
             f(&mut out[..len])
